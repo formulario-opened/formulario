@@ -1,11 +1,9 @@
-// server.js
+// server.js (com logging melhorado)
 // Requisitos: node >=14
 // Instalar: npm install express node-fetch@2
 // Uso:
-//   export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."   # não exponha essa URL ao cliente
+//   export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..." 
 //   node server.js
-//
-// O servidor serve os arquivos em /public e recebe POST /submit para enviar ao webhook do Discord.
 
 const express = require("express");
 const fetch = require("node-fetch");
@@ -14,13 +12,11 @@ const path = require("path");
 
 const app = express();
 app.use(express.json());
-
-// Serve arquivos estáticos (client)
 app.use(express.static(path.join(__dirname, "public")));
 
 const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 if (!WEBHOOK_URL) {
-  console.error("ERRO: defina a variável de ambiente DISCORD_WEBHOOK_URL com a URL do webhook do Discord.");
+  console.error("ERRO: defina DISCORD_WEBHOOK_URL no ambiente.");
   process.exit(1);
 }
 
@@ -39,9 +35,8 @@ async function domainHasMx(email) {
   }
 }
 
-// Rate limiter simples em memória por IP
 const submissions = new Map();
-const WINDOW_MS = 60 * 1000; // 1 minuto
+const WINDOW_MS = 60 * 1000;
 const MAX_PER_WINDOW = 15;
 
 app.post("/submit", async (req, res) => {
@@ -58,8 +53,6 @@ app.post("/submit", async (req, res) => {
     submissions.set(ip, recent);
 
     const { name, email, favorite, why } = req.body || {};
-
-    // tipos e limites
     const safeName = typeof name === "string" ? name.trim().slice(0, 100) : "";
     const safeEmail = typeof email === "string" ? email.trim().slice(0, 254) : "";
     const safeFavorite = typeof favorite === "string" ? favorite.trim().slice(0, 200) : "";
@@ -68,18 +61,13 @@ app.post("/submit", async (req, res) => {
     if (!safeFavorite) {
       return res.status(400).json({ ok: false, message: "Campo 'favorite' é obrigatório." });
     }
-
     if (safeEmail && !validEmailFormat(safeEmail)) {
       return res.status(400).json({ ok: false, message: "E-mail inválido." });
     }
 
-    // Verificação opcional de MX (não essencial, evita latência em alguns casos)
     let mxOk = false;
-    try {
-      if (safeEmail) mxOk = await domainHasMx(safeEmail);
-    } catch {}
+    try { if (safeEmail) mxOk = await domainHasMx(safeEmail); } catch {}
 
-    // Cria mensagem para o Discord (texto simples)
     const lines = [
       "📨 Nova resposta — Pesquisa Meme Favorito",
       `Nome: ${safeName || "(não informado)"}`,
@@ -97,10 +85,16 @@ app.post("/submit", async (req, res) => {
       body: JSON.stringify({ content })
     });
 
+    // Log detalhado para debugging (não logue o WEBHOOK_URL em lugares públicos)
+    console.log(`[WEBHOOK] status=${r.status} statusText=${r.statusText}`);
+    // tenta ler corpo (pode ser vazio se 204)
+    const text = await r.text().catch(() => "");
+    if (text) console.log("[WEBHOOK] body:", text);
+
     if (!r.ok) {
-      const text = await r.text().catch(() => "");
-      console.error("Erro ao postar no webhook:", r.status, text);
-      return res.status(500).json({ ok: false, message: "Falha ao enviar ao webhook." });
+      // Se o Discord retornou 429, 401, 403, etc, logamos e devolvemos um erro ao cliente
+      console.error("Falha ao postar no webhook:", r.status, r.statusText);
+      return res.status(500).json({ ok: false, message: `Falha ao enviar ao webhook (status ${r.status}). Veja logs do servidor para detalhes.` });
     }
 
     return res.json({ ok: true });
